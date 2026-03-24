@@ -127,10 +127,27 @@
                 </div>
 
                 <div class="pt-5 border-t border-slate-700/50">
-                    <p class="text-xs text-slate-400 mb-3 uppercase tracking-wider font-medium">Reactor Concentrations (Molar)</p>
-                    <div class="flex justify-between text-sm bg-slate-900/60 p-3 rounded-lg border border-slate-700/50">
-                        <span class="text-slate-300 font-medium">[F]: <span id="fReactorOutput" class="font-mono text-blue-400 ml-1">0.00</span> M</span>
-                        <span class="text-slate-300 font-medium">[Ca]: <span id="caReactorOutput" class="font-mono text-purple-400 ml-1">0.00</span> M</span>
+                    <p class="text-xs text-slate-400 mb-3 uppercase tracking-wider font-medium">System Concentrations</p>
+                    <div class="space-y-3">
+                        <!-- Initial -->
+                        <div class="flex flex-col sm:flex-row justify-between sm:items-center text-sm bg-slate-900/40 p-3 rounded-lg border border-slate-700/30 gap-2">
+                            <span class="text-slate-400 text-xs uppercase font-semibold">Initial (Pre-reaction)</span>
+                            <div class="flex gap-4">
+                                <span class="text-slate-300 font-medium">[F]: <span id="fReactorOutput" class="font-mono text-blue-400">0.00</span> M</span>
+                                <span class="text-slate-300 font-medium">[Ca]: <span id="caReactorOutput" class="font-mono text-purple-400">0.00</span> M</span>
+                            </div>
+                        </div>
+                        
+                        <!-- Residual -->
+                        <div class="flex flex-col sm:flex-row justify-between sm:items-center text-sm bg-slate-900/60 p-3 rounded-lg border border-slate-700/50 shadow-inner gap-2">
+                            <span class="text-emerald-400/80 text-xs uppercase font-bold">Residual (Equilibrium)</span>
+                            <div class="flex gap-4 flex-wrap">
+                                <span class="text-slate-300 font-medium">[F]: <span id="fResidualOutput" class="font-mono text-blue-400">0.00</span> mg/L</span>
+                                <span class="text-slate-300 font-medium">[Ca]: <span id="caResidualOutput" class="font-mono text-purple-400">0.00</span> mg/L</span>
+                                <span class="text-slate-300 font-medium" title="Ca Hardness as CaCO3">Hardness: <span id="hardnessOutput" class="font-mono text-amber-400">0</span> mg/L</span>
+                                <span class="text-slate-300 font-medium" title="Assuming CaCl2 dosing">[Cl⁻]: <span id="clOutput" class="font-mono text-slate-400">0.00</span> mg/L</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -142,6 +159,9 @@
         // Constants
         const KSP_CAF2 = 3.9e-11;
         const MW_FLUORIDE = 18.9984; // g/mol
+        const MW_CALCIUM = 40.078; // g/mol
+        const MW_CACO3 = 100.0869; // g/mol
+        const MW_CHLORIDE = 35.45; // g/mol
 
         const outputs = {
             siContainer: document.getElementById('siContainer'),
@@ -150,7 +170,11 @@
             q: document.getElementById('qOutput'),
             dilution: document.getElementById('dilutionOutput'),
             fReactor: document.getElementById('fReactorOutput'),
-            caReactor: document.getElementById('caReactorOutput')
+            caReactor: document.getElementById('caReactorOutput'),
+            fResidual: document.getElementById('fResidualOutput'),
+            caResidual: document.getElementById('caResidualOutput'),
+            hardness: document.getElementById('hardnessOutput'),
+            cl: document.getElementById('clOutput')
         };
 
         function calculate() {
@@ -175,9 +199,12 @@
 
             if (dilutionRatio <= 0) return;
 
-            // 3. Calculate Reactor Concentrations
+            // 3. Calculate Initial Reactor Concentrations
             const fReactorMolar = fRawMolar / dilutionRatio;
             const caReactorMolar = fReactorMolar * caFRatio;
+            
+            // Cl- concentration (Assuming standard CaCl2 dosing)
+            const clMolar = caReactorMolar * 2;
 
             // 4. Calculate Quotient (Q)
             const q = caReactorMolar * Math.pow(fReactorMolar, 2);
@@ -185,17 +212,55 @@
             // 5. Calculate Saturation Index (SI)
             const si = Math.log10(q / KSP_CAF2);
 
+            // 6. Calculate Equilibrium Residual Concentrations (Bisection Method)
+            let residualCa = caReactorMolar;
+            let residualF = fReactorMolar;
+
+            if (q > KSP_CAF2) {
+                // Precipitation occurs, find 'x' moles of CaF2 precipitated
+                let low = 0;
+                let high = Math.min(caReactorMolar, fReactorMolar / 2);
+                
+                // 60 iterations provides extreme precision for this range
+                for (let i = 0; i < 60; i++) {
+                    let mid = (low + high) / 2;
+                    let currentQ = (caReactorMolar - mid) * Math.pow(fReactorMolar - 2 * mid, 2);
+                    if (currentQ > KSP_CAF2) {
+                        low = mid; // Need to precipitate more
+                    } else {
+                        high = mid; // Precipitated too much
+                    }
+                }
+                
+                let x = (low + high) / 2;
+                residualCa = Math.max(0, caReactorMolar - x);
+                residualF = Math.max(0, fReactorMolar - 2 * x);
+            }
+
+            // 7. Convert Residuals to mg/L & Calculate Hardness
+            const residualF_mgL = residualF * MW_FLUORIDE * 1000;
+            const residualCa_mgL = residualCa * MW_CALCIUM * 1000;
+            const hardness_mgL_CaCO3 = residualCa * MW_CACO3 * 1000; // Hardness as mg/L CaCO3
+            const cl_mgL = clMolar * MW_CHLORIDE * 1000;
+
             // Update UI
             outputs.dilution.innerText = dilutionRatio.toFixed(2);
             outputs.q.innerText = q.toExponential(2);
+            
             outputs.fReactor.innerText = fReactorMolar.toExponential(2);
             outputs.caReactor.innerText = caReactorMolar.toExponential(2);
+            
+            outputs.fResidual.innerText = residualF_mgL.toFixed(2);
+            outputs.caResidual.innerText = residualCa_mgL.toFixed(2);
+            outputs.hardness.innerText = hardness_mgL_CaCO3.toFixed(0);
+            outputs.cl.innerText = cl_mgL.toFixed(2);
+            
             outputs.si.innerText = si.toFixed(3);
 
             // Interpret SI Status based on target range [2.0, 3.0]
             if (si >= 2 && si <= 3) {
                 // Optimal Range
-                outputs.status.innerText = "Optimal Range (Good Precipitation)";
+                outputs.status.innerText = "Optimal Range (Good crystallization)";
                 outputs.status.className = "text-sm mt-3 font-bold text-emerald-400 drop-shadow-[0_0_10px_rgba(52,211,153,0.8)]";
                 outputs.si.style.textShadow = "0 0 24px rgba(52,211,153,0.5)";
                 outputs.si.style.color = "#a7f3d0"; 
@@ -211,7 +276,7 @@
                 outputs.si.classList.add('animate-pulse');
             } else {
                 // Too Low (< 2)
-                const text = si > 0 ? "Too Low (Slow Precipitation)" : "Undersaturated (Dissolution)";
+                const text = si > 0 ? "Too Low (low F removal)" : "Undersaturated (Dissolution)";
                 outputs.status.innerText = text;
                 outputs.status.className = "text-sm mt-3 font-bold text-amber-400 drop-shadow-[0_0_10px_rgba(251,191,36,1)]";
                 outputs.si.style.textShadow = "0 0 30px rgba(251,191,36,0.9)";
